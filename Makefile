@@ -131,6 +131,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 
 UPROGS=\
 	$U/_cat\
+	$U/_bubblesort\
 	$U/_echo\
 	$U/_forktest\
 	$U/_grep\
@@ -174,10 +175,52 @@ ifndef CPUS
 CPUS := 3
 endif
 
-QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
-QEMUOPTS += -global virtio-mmio.force-legacy=false
-QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
-QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+# QEMU options: comment out any line to disable that option.
+QEMUOPTS = -machine virt                                      # Use the QEMU virt machine.
+QEMUOPTS += -bios none                                        # Do not load a BIOS.
+QEMUOPTS += -kernel $K/kernel                                  # Load the xv6 kernel.
+QEMUOPTS += -m 128M                                            # Allocate 128 MiB of RAM.
+QEMUOPTS += -smp $(CPUS)                                       # Use the configured CPU count.
+QEMUOPTS += -nographic                                          # Keep console I/O in the terminal.
+QEMUOPTS += -global virtio-mmio.force-legacy=false             # Use modern virtio MMIO behavior.
+QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0       # Define the xv6 disk image.
+QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 # Attach the disk image.
+
+# QEMU logging options. Uncomment individual trace events as needed.
+comma := ,
+empty :=
+space := $(empty) $(empty)
+QEMU_TRACE =
+
+# ******************** CURRENT DEFAULTS ********************
+QEMU_TRACE += out_asm         # Show generated host assembly for each translation block.
+QEMU_TRACE += in_asm          # Show target assembly for each translation block.
+QEMU_TRACE += op              # Show translated micro operations.
+QEMU_TRACE += int             # Show interrupts and exceptions.
+QEMU_TRACE += op_ind        # Show micro operations before indirect lowering.
+QEMU_TRACE += page            # Dump pages at the start of user-mode emulation.
+QEMU_TRACE += strace          # Log user-mode syscalls.
+
+
+# QEMU_TRACE += op_opt        # Show optimized micro operations.
+# QEMU_TRACE += cpu           # Show CPU registers before each translation block.
+# QEMU_TRACE += fpu           # Include FPU registers in CPU logging.
+# QEMU_TRACE += mmu             # Log MMU-related activity.
+# QEMU_TRACE += pcall          # Log x86 protected-mode far calls and returns.
+# QEMU_TRACE += cpu_reset      # Show CPU state before CPU resets.
+# QEMU_TRACE += unimp          # Log unimplemented functionality.
+# QEMU_TRACE += guest_errors   # Log invalid guest operations.
+# QEMU_TRACE += nochain       # Disable translation-block chaining.
+# QEMU_TRACE += plugin        # Enable TCG plugin output.
+# QEMU_TRACE += tid           # Write separate log files per thread.
+# QEMU_TRACE += vpu           # Include VPU registers in CPU logging.
+# QEMU_TRACE += trace:PATTERN # Enable trace events matching PATTERN.
+
+# ******************** POOR PERFORMANCE OPTS ********************
+# QEMU_TRACE += exec            # Show each executed translation block.
+
+QEMUOPTS += -d $(subst $(space),$(comma),$(strip $(QEMU_TRACE)))
+QEMUOPTS += -D $(CURDIR)/qemu-trace.log # Write QEMU logs to this file.
 
 qemu: check-qemu-version $K/kernel fs.img
 	$(QEMU) $(QEMUOPTS)
