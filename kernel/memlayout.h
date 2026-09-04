@@ -21,6 +21,9 @@
 #define UART0     0x10000000L
 #define UART0_IRQ 10
 
+// qemu virt test device; writing 0x5555 powers off qemu.
+#define VIRT_TEST 0x00100000L
+
 // virtio mmio interface
 #define VIRTIO0     0x10001000
 #define VIRTIO0_IRQ 1

@@ -7,6 +7,7 @@
 //   control-u -- kill line
 //   control-d -- end of file
 //   control-p -- print process list
+//   control-c -- terminate the current user process, or qemu if idle
 //
 
 #include <stdarg.h>
@@ -24,6 +25,15 @@
 
 #define BACKSPACE 0x100       // erase the last output character
 #define C(x)      ((x) - '@') // Control-x
+#define QEMU_EXIT 0x5555
+
+static void
+qemu_exit(void)
+{
+  *(volatile uint32 *)VIRT_TEST = QEMU_EXIT;
+  for (;;)
+    ;
+}
 
 //
 // send one character to the uart, but don't use
@@ -149,6 +159,12 @@ consoleintr(int c)
   acquire(&cons.lock);
 
   switch (c) {
+  case C('C'):
+    if (myproc() != 0 && myproc() != initproc)
+      setkilled(myproc());
+    else
+      qemu_exit();
+    break;
   case C('P'): // Print process list.
     procdump();
     break;
