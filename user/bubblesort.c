@@ -2,12 +2,15 @@
 #include "kernel/stat.h"
 #include "user/user.h"
 
+static volatile int count_g = 0;
+
 static void
 bubble_sort(int *numbers, int count)
 {
   int i, j, temporary, swapped;
 
   for (i = 0; i < count - 1; i++) {
+    count_g ++;
     swapped = 0;
     for (j = 0; j < count - i - 1; j++) {
       if (numbers[j] > numbers[j + 1]) {

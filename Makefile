@@ -52,8 +52,44 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	echo "***" 1>&2; exit 1; fi)
 endif
 
-QEMU = qemu-system-riscv64
+QEMU = /home/kplat/qemu/build/qemu-system-riscv64
 MIN_QEMU_VERSION = 7.2
+
+QEMU_SRC = /home/kplat/qemu
+
+PLUGIN_DIR = qemu-plugins
+PLUGIN_SRC = $(PLUGIN_DIR)/xv6trace.c
+PLUGIN_SO = $(PLUGIN_DIR)/libxv6trace.so
+USER_PC_TEMPLATE = $(PLUGIN_DIR)/user_pc.mustache
+USER_PROGRAM ?= $U/_bubblesort
+USER_PC_SOURCE = $(PLUGIN_DIR)/generated_user_pc_$(notdir $(USER_PROGRAM)).c
+GLIB_CFLAGS += $(shell pkg-config --cflags glib-2.0)
+GLIB_LDFLAGS = $(shell pkg-config --libs glib-2.0)
+
+# QEMU plugins execute on the HOST, so use the normal host compiler.
+PLUGIN_CC = gcc
+
+QEMU_PLUGIN_INC := $(firstword \
+	$(wildcard $(QEMU_SRC)/include/plugins) \
+	$(wildcard $(QEMU_SRC)/include/qemu))
+
+PLUGIN_CFLAGS = \
+	-O3 \
+	-Wall \
+	-Wextra \
+	-fPIC \
+	-I$(QEMU_PLUGIN_INC) \
+	$(GLIB_CFLAGS) \
+	$(GLIB_LDFLAGS) \
+
+$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) nm_symbols.py
+	python3 nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
+
+$(PLUGIN_SO): $(PLUGIN_SRC) $(USER_PC_SOURCE)
+	$(PLUGIN_CC) $(PLUGIN_CFLAGS) -shared -o $@ $(PLUGIN_SRC) $(USER_PC_SOURCE) $(PLUGIN_LDFLAGS)
+
+.PHONY: FORCE
+FORCE:
 
 CC = $(TOOLPREFIX)gcc
 LD = $(TOOLPREFIX)ld
@@ -63,7 +99,7 @@ OBJDUMP = $(TOOLPREFIX)objdump
 # Deterministic builds.
 DETFLAGS = -ffile-prefix-map=$(CURDIR)=.
 
-CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -Werror -Wno-unknown-attributes -O0 -fno-inline -fno-omit-frame-pointer -ggdb -gdwarf-2
 CFLAGS += $(DETFLAGS)
 CFLAGS += -march=rv64gc
 CFLAGS += -std=gnu99
@@ -163,7 +199,10 @@ clean:
 	$K/kernel fs.img \
 	mkfs/mkfs .gdbinit \
         $U/usys.S \
-	$(UPROGS)
+	$(UPROGS) \
+	$(PLUGIN_SO) \
+	$(PLUGIN_DIR)/generated_user_pc_*.c \
+	qemu-trace.csv
 
 # try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
@@ -172,7 +211,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::$(GDBPORT)"; \
 	else echo "-s -p $(GDBPORT)"; fi)
 ifndef CPUS
-CPUS := 3
+CPUS := 1
 endif
 
 # QEMU options: comment out any line to disable that option.
@@ -190,45 +229,17 @@ QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 # Attach th
 comma := ,
 empty :=
 space := $(empty) $(empty)
-QEMU_TRACE =
 
-# ******************** CURRENT DEFAULTS ********************
-QEMU_TRACE += out_asm         # Show generated host assembly for each translation block.
-QEMU_TRACE += in_asm          # Show target assembly for each translation block.
-QEMU_TRACE += op              # Show translated micro operations.
-QEMU_TRACE += int             # Show interrupts and exceptions.
-QEMU_TRACE += op_ind        # Show micro operations before indirect lowering.
-QEMU_TRACE += page            # Dump pages at the start of user-mode emulation.
-QEMU_TRACE += strace          # Log user-mode syscalls.
+# Trace memory accesses made by user prog across the full user virtual address space.
+QEMUOPTS += -plugin $(CURDIR)/$(PLUGIN_SO),outfile=$(CURDIR)/qemu-trace.csv,watch=0x0,bytes=0xffffffffffffffff,user-start=0x0,user-end=0x9e8
 
-
-# QEMU_TRACE += op_opt        # Show optimized micro operations.
-# QEMU_TRACE += cpu           # Show CPU registers before each translation block.
-# QEMU_TRACE += fpu           # Include FPU registers in CPU logging.
-# QEMU_TRACE += mmu             # Log MMU-related activity.
-# QEMU_TRACE += pcall          # Log x86 protected-mode far calls and returns.
-# QEMU_TRACE += cpu_reset      # Show CPU state before CPU resets.
-# QEMU_TRACE += unimp          # Log unimplemented functionality.
-# QEMU_TRACE += guest_errors   # Log invalid guest operations.
-# QEMU_TRACE += nochain       # Disable translation-block chaining.
-# QEMU_TRACE += plugin        # Enable TCG plugin output.
-# QEMU_TRACE += tid           # Write separate log files per thread.
-# QEMU_TRACE += vpu           # Include VPU registers in CPU logging.
-# QEMU_TRACE += trace:PATTERN # Enable trace events matching PATTERN.
-
-# ******************** POOR PERFORMANCE OPTS ********************
-# QEMU_TRACE += exec            # Show each executed translation block.
-
-QEMUOPTS += -d $(subst $(space),$(comma),$(strip $(QEMU_TRACE)))
-QEMUOPTS += -D $(CURDIR)/qemu-trace.log # Write QEMU logs to this file.
-
-qemu: check-qemu-version $K/kernel fs.img
+qemu: check-qemu-version $K/kernel fs.img $(PLUGIN_SO)
 	$(QEMU) $(QEMUOPTS)
 
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit fs.img
+qemu-gdb: $K/kernel .gdbinit fs.img $(PLUGIN_SO)
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 
