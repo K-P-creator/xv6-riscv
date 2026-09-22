@@ -13,4 +13,5 @@ TAGS
 
 qemu-trace.log
 qemu-plugins/libxv6trace.so
+qemu-plugins/generated_*.c
 qemu-trace.csv

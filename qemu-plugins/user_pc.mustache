@@ -1,0 +1,14 @@
+#include <stdbool.h>
+#include <stdint.h>
+
+bool interesting_user_pc(uint64_t pc)
+{
+    switch (pc) {
+{{#symbols}}
+    case {{address}}: /* {{name}} */
+{{/symbols}}
+        return true;
+    default:
+        return false;
+    }
+}

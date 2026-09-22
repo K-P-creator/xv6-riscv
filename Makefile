@@ -60,6 +60,9 @@ QEMU_SRC = /home/kplat/qemu
 PLUGIN_DIR = qemu-plugins
 PLUGIN_SRC = $(PLUGIN_DIR)/xv6trace.c
 PLUGIN_SO = $(PLUGIN_DIR)/libxv6trace.so
+USER_PC_TEMPLATE = $(PLUGIN_DIR)/user_pc.mustache
+USER_PROGRAM ?= $U/_bubblesort
+USER_PC_SOURCE = $(PLUGIN_DIR)/generated_user_pc_$(notdir $(USER_PROGRAM)).c
 GLIB_CFLAGS += $(shell pkg-config --cflags glib-2.0)
 GLIB_LDFLAGS = $(shell pkg-config --libs glib-2.0)
 
@@ -71,7 +74,7 @@ QEMU_PLUGIN_INC := $(firstword \
 	$(wildcard $(QEMU_SRC)/include/qemu))
 
 PLUGIN_CFLAGS = \
-	-O2 \
+	-O3 \
 	-Wall \
 	-Wextra \
 	-fPIC \
@@ -79,8 +82,14 @@ PLUGIN_CFLAGS = \
 	$(GLIB_CFLAGS) \
 	$(GLIB_LDFLAGS) \
 
-$(PLUGIN_SO): $(PLUGIN_SRC)
-	$(PLUGIN_CC) $(PLUGIN_CFLAGS) -shared -o $@ $< $(PLUGIN_LDFLAGS)
+$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) nm_symbols.py
+	python3 nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
+
+$(PLUGIN_SO): $(PLUGIN_SRC) $(USER_PC_SOURCE)
+	$(PLUGIN_CC) $(PLUGIN_CFLAGS) -shared -o $@ $(PLUGIN_SRC) $(USER_PC_SOURCE) $(PLUGIN_LDFLAGS)
+
+.PHONY: FORCE
+FORCE:
 
 CC = $(TOOLPREFIX)gcc
 LD = $(TOOLPREFIX)ld
@@ -90,7 +99,7 @@ OBJDUMP = $(TOOLPREFIX)objdump
 # Deterministic builds.
 DETFLAGS = -ffile-prefix-map=$(CURDIR)=.
 
-CFLAGS = -Wall -Werror -Wno-unknown-attributes -O -fno-omit-frame-pointer -ggdb -gdwarf-2
+CFLAGS = -Wall -Werror -Wno-unknown-attributes -O0 -fno-inline -fno-omit-frame-pointer -ggdb -gdwarf-2
 CFLAGS += $(DETFLAGS)
 CFLAGS += -march=rv64gc
 CFLAGS += -std=gnu99
@@ -192,6 +201,7 @@ clean:
         $U/usys.S \
 	$(UPROGS) \
 	$(PLUGIN_SO) \
+	$(PLUGIN_DIR)/generated_user_pc_*.c \
 	qemu-trace.csv
 
 # try to generate a unique GDB port
@@ -220,7 +230,8 @@ comma := ,
 empty :=
 space := $(empty) $(empty)
 
-QEMUOPTS += -plugin $(CURDIR)/$(PLUGIN_SO),outfile=$(CURDIR)/qemu-trace.csv
+# Trace memory accesses made by user prog across the full user virtual address space.
+QEMUOPTS += -plugin $(CURDIR)/$(PLUGIN_SO),outfile=$(CURDIR)/qemu-trace.csv,watch=0x0,bytes=0xffffffffffffffff,user-start=0x0,user-end=0x9e8
 
 qemu: check-qemu-version $K/kernel fs.img $(PLUGIN_SO)
 	$(QEMU) $(QEMUOPTS)
