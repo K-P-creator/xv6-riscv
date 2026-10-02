@@ -15,3 +15,8 @@ qemu-trace.log
 qemu-plugins/libxv6trace.so
 qemu-plugins/generated_*.c
 qemu-trace.csv
+
+trace_mem.md
+trace_add.md
+
+.vscode/

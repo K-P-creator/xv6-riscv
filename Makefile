@@ -82,8 +82,8 @@ PLUGIN_CFLAGS = \
 	$(GLIB_CFLAGS) \
 	$(GLIB_LDFLAGS) \
 
-$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) nm_symbols.py
-	python3 nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
+$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) tools/nm_symbols.py
+	python3 tools/nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
 
 $(PLUGIN_SO): $(PLUGIN_SRC) $(USER_PC_SOURCE)
 	$(PLUGIN_CC) $(PLUGIN_CFLAGS) -shared -o $@ $(PLUGIN_SRC) $(USER_PC_SOURCE) $(PLUGIN_LDFLAGS)

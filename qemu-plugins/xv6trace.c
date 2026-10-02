@@ -198,6 +198,39 @@ static bool range_overlaps(
         : watched_addr - addr < size;
 }
 
+static void format_mem_value(
+    qemu_plugin_mem_value value,
+    char *buffer,
+    size_t buffer_size)
+{
+    switch (value.type) {
+    case QEMU_PLUGIN_MEM_VALUE_U8:
+        snprintf(buffer, buffer_size, "0x%02" PRIx8, value.data.u8);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U16:
+        snprintf(buffer, buffer_size, "0x%04" PRIx16, value.data.u16);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U32:
+        snprintf(buffer, buffer_size, "0x%08" PRIx32, value.data.u32);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U64:
+        snprintf(buffer, buffer_size, "0x%016" PRIx64, value.data.u64);
+        break;
+    case QEMU_PLUGIN_MEM_VALUE_U128:
+        snprintf(
+            buffer,
+            buffer_size,
+            "0x%016" PRIx64 "%016" PRIx64,
+            value.data.u128.high,
+            value.data.u128.low
+        );
+        break;
+    default:
+        snprintf(buffer, buffer_size, "unknown");
+        break;
+    }
+}
+
 static void mem_access(
     unsigned int vcpu_index,
     qemu_plugin_meminfo_t info,
@@ -206,19 +239,25 @@ static void mem_access(
 {
     uint64_t pc = (uint64_t)(uintptr_t)userdata;
     uint64_t size = 1ULL << qemu_plugin_mem_size_shift(info);
+    qemu_plugin_mem_value value;
+    char value_hex[35];
 
     if (!range_overlaps(vaddr, size, watch_addr, watch_size)) {
         return;
     }
 
+    value = qemu_plugin_mem_get_value(info);
+    format_mem_value(value, value_hex, sizeof(value_hex));
+
     fprintf(
         trace_file,
-        "mem,%u,0x%016" PRIx64 ",0x%016" PRIx64 ",%" PRIu64 ",%s\n",
+        "mem,%u,0x%016" PRIx64 ",0x%016" PRIx64 ",%" PRIu64 ",%s,%s\n",
         vcpu_index,
         pc,
         vaddr,
         size,
-        qemu_plugin_mem_is_store(info) ? "write" : "read"
+        qemu_plugin_mem_is_store(info) ? "write" : "read",
+        value_hex
     );
 }
 
@@ -233,7 +272,7 @@ static void tb_exec(unsigned int vcpu_index, void *userdata)
 
     fprintf(
         trace_file,
-        "kernel,%u,0x%016" PRIx64 ",,,\n",
+        "kernel,%u,0x%016" PRIx64 ",,,,\n",
         vcpu_index,
         pc
     );
@@ -245,7 +284,7 @@ static void user_pc_exec(unsigned int vcpu_index, void *userdata)
 
     fprintf(
         trace_file,
-        "user,%u,0x%016" PRIx64 ",,,\n",
+        "user,%u,0x%016" PRIx64 ",,,,\n",
         vcpu_index,
         pc
     );
@@ -425,7 +464,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(
         1024 * 1024
     );
 
-    fprintf(trace_file, "record,vcpu,pc,address,size,operation\n");
+    fprintf(trace_file, "record,vcpu,pc,address,size,operation,value\n");
 
     /*
      * Ask QEMU to notify us whenever it translates a block.
