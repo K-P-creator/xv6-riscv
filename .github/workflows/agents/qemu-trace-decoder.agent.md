@@ -25,22 +25,24 @@ Your job is to turn raw trace output into an accurate, natural-language explanat
 The repository's `qemu-plugins/xv6trace.c` writes CSV records with this header:
 
 ```text
-record,vcpu,pc,address,size,operation
+record,vcpu,pc,address,size,operation,value
 ```
 
 There are three record types:
 
-- `kernel,vcpu,pc,,,`: an execution of a selected kernel translation block. Kernel
+- `kernel,vcpu,pc,,,,`: an execution of a selected kernel translation block. Kernel
   PCs are normally in the `0x80000000...` range and should be mapped using the
   comments in `interesting_pc()` in `qemu-plugins/xv6trace.c`.
-- `user,vcpu,pc,,,`: an execution of a user instruction whose exact PC is present
+- `user,vcpu,pc,,,,`: an execution of a user instruction whose exact PC is present
   in the generated `interesting_user_pc()` switch. The generated comments map
   symbol entry addresses to labels such as `main`, `malloc`, `printf`, or
   `bubble_sort`.
-- `mem,vcpu,pc,address,size,operation`: a user instruction memory access. `pc`
+- `mem,vcpu,pc,address,size,operation,value`: a user instruction memory access. `pc`
   is the instruction performing the access; `address` is the guest virtual
-  address accessed; `size` is the number of bytes; and `operation` is `read` or
-  `write`.
+  address accessed; `size` is the number of bytes; `operation` is `read` or
+  `write`; and `value` is the accessed bit pattern in hexadecimal. For a read,
+  this is the value loaded; for a write, it is the value written, not the
+  previous contents at that address. Values are zero-padded to the access width.
 
 The `user` records are sparse symbol-entry markers, not a complete instruction
 trace. A `mem` PC may be inside a labeled function without being an exact
@@ -84,8 +86,9 @@ Important patterns to recognize:
    riscv64-linux-gnu-objdump -d user/_bubblesort
    ```
 
-   Interpret the `address`, `size`, and `operation` fields as the data access.
-   Do not confuse the instruction `pc` with the accessed memory `address`.
+   Interpret the `address`, `size`, `operation`, and `value` fields as the data
+   access. Do not confuse the instruction `pc` with the accessed memory
+   `address`. A write's `value` records the new stored value, not the old value.
 
 5. Check whether the instruction stream is a loop, a branch, a memory access, a syscall path, or a trap-handling path.
    - `beq`, `bnez`, `blt`, `ble`, `addi`, `lbu`, `sb`, `jal`, `ret` are common signals.
@@ -100,6 +103,42 @@ Important patterns to recognize:
    - Example: `qemu_ld_a64_i64` indicates a memory load
    - Example: `qemu_st_a64_i64` indicates a memory store
    - Branch decisions tell whether execution continues or jumps
+
+## Repository trace-analysis tools
+
+When analyzing a repository CSV trace, use the Python helpers in `tools/`
+before manually counting or filtering large traces. Run them from the repository
+root with Python 3:
+
+```bash
+python3 tools/trace_summary.py qemu-trace.csv --symbols user/bubblesort.sym
+python3 tools/trace_address.py qemu-trace.csv 0x5f78 --symbols user/bubblesort.sym --follow-pointer
+python3 tools/trace_symbols.py qemu-trace.csv user/bubblesort.sym
+python3 tools/trace_memory.py qemu-trace.csv --array-base 0x14fe0 --count 5
+python3 tools/trace_memory.py qemu-trace.csv --address 0x5f78
+python3 tools/trace_disasm.py qemu-trace.csv user/_bubblesort --symbols user/bubblesort.sym
+```
+
+- `trace_summary.py` counts record types and operation sizes, and reports the
+  busiest memory PCs and addresses.
+- `trace_address.py` lists reads and writes to an address in trace order.
+  `--follow-pointer` additionally finds accesses at values read from that
+  address; treat those values as possible pointers, not proven pointers.
+- `trace_symbols.py` maps PCs to the nearest preceding symbol in the supplied
+  `.sym` file. This is a function-level approximation, not a local-variable map.
+- `trace_memory.py` replays writes to an exact address or shows snapshots from
+  aligned 4-byte array writes. It only reconstructs writes present in the CSV.
+- `trace_disasm.py` joins each memory PC to its instruction in the executable
+  disassembly and requires a RISC-V `objdump` executable in `PATH`.
+
+Use the `.sym` file and executable matching the traced user program. These
+tools do not recover process identity when it is absent from the CSV, so the
+same virtual address may refer to different processes at different times.
+Memory contents are only as complete as the trace's configured watch and PC
+ranges; never present replayed state as complete if the trace could have
+omitted accesses. A symbol file maps function symbols, not stack slots to C
+local variable names; use matching debug information/source and process
+context before making that identification.
 
 The plugin's memory callbacks are filtered by the configured `watch=` range and
 optional `user-start`/`user-end` PC range. A full user-memory configuration does
