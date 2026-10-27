@@ -52,10 +52,10 @@ TOOLPREFIX := $(shell if riscv64-unknown-elf-objdump -i 2>&1 | grep 'elf64-big' 
 	echo "***" 1>&2; exit 1; fi)
 endif
 
-QEMU = /home/kplat/qemu/build/qemu-system-riscv64
+QEMU ?= qemu-system-riscv64
 MIN_QEMU_VERSION = 7.2
 
-QEMU_SRC = /home/kplat/qemu
+QEMU_SRC ?= /usr/local
 
 PLUGIN_DIR = qemu-plugins
 PLUGIN_SRC = $(PLUGIN_DIR)/xv6trace.c
@@ -71,7 +71,8 @@ PLUGIN_CC = gcc
 
 QEMU_PLUGIN_INC := $(firstword \
 	$(wildcard $(QEMU_SRC)/include/plugins) \
-	$(wildcard $(QEMU_SRC)/include/qemu))
+	$(wildcard $(QEMU_SRC)/include/qemu) \
+	$(wildcard /usr/include/qemu))
 
 PLUGIN_CFLAGS = \
 	-O3 \
@@ -82,8 +83,8 @@ PLUGIN_CFLAGS = \
 	$(GLIB_CFLAGS) \
 	$(GLIB_LDFLAGS) \
 
-$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) nm_symbols.py
-	python3 nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
+$(USER_PC_SOURCE): FORCE $(USER_PROGRAM) $(USER_PC_TEMPLATE) tools/nm_symbols.py
+	python3 tools/nm_symbols.py $(USER_PROGRAM) --text-only --template $(USER_PC_TEMPLATE) --output $@
 
 $(PLUGIN_SO): $(PLUGIN_SRC) $(USER_PC_SOURCE)
 	$(PLUGIN_CC) $(PLUGIN_CFLAGS) -shared -o $@ $(PLUGIN_SRC) $(USER_PC_SOURCE) $(PLUGIN_LDFLAGS)
@@ -168,6 +169,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_bubblesort\
+	$U/_polybench\
 	$U/_echo\
 	$U/_forktest\
 	$U/_grep\
@@ -188,8 +190,8 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_sync\
 
-fs.img: mkfs/mkfs README $(UPROGS)
-	mkfs/mkfs fs.img README $(UPROGS)
+fs.img: mkfs/mkfs README.md $(UPROGS)
+	mkfs/mkfs fs.img README.md $(UPROGS)
 
 -include kernel/*.d user/*.d
 

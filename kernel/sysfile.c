@@ -16,6 +16,19 @@
 #include "file.h"
 #include "fcntl.h"
 
+static struct inode *create(char *, short, short, short);
+static struct sleeplock pwalk_lock;
+static uint64 pwalk_calls;
+static uint64 kwalk_calls;
+
+void
+pwalkinit(void)
+{
+  initsleeplock(&pwalk_lock, "pwalk");
+  pwalk_calls = 0;
+  kwalk_calls = 0;
+}
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -92,6 +105,267 @@ sys_write(void)
     return -1;
 
   return filewrite(f, p, n);
+}
+
+static void
+pwalk_hex(char **dst, uint64 value, int digits)
+{
+  static char hex[] = "0123456789abcdef";
+
+  for (int i = digits - 1; i >= 0; i--)
+    *(*dst)++ = hex[(value >> (i * 4)) & 0xf];
+}
+
+static int
+pwalk_append(struct inode *ip, const char *line, int len)
+{
+  int written;
+  begin_op();
+  ilock(ip);
+  written = writei(ip, 0, (uint64)line, ip->size, len);
+  iunlock(ip);
+  end_op();
+  return written == len ? 0 : -1;
+}
+
+static int
+pwalk_header(struct inode *ip, uint64 call)
+{
+  char line[48];
+  char *p = line;
+  static const char prefix[] = "=== pwalk call 0x";
+
+  for (int i = 0; i < sizeof(prefix) - 1; i++)
+    *p++ = prefix[i];
+  pwalk_hex(&p, call, 16);
+  *p++ = ' ';
+  *p++ = '=';
+  *p++ = '=';
+  *p++ = '=';
+  *p++ = '\n';
+  return pwalk_append(ip, line, p - line);
+}
+
+static int
+pwalk_entry(struct inode *ip, int level, int index, pte_t pte)
+{
+  char line[32];
+  char *p = line;
+
+  *p++ = 'L';
+  *p++ = '0' + level;
+  *p++ = '[';
+  pwalk_hex(&p, index, 3);
+  *p++ = ']';
+  *p++ = ' ';
+  *p++ = '0';
+  *p++ = 'x';
+  pwalk_hex(&p, pte, 16);
+  *p++ = '\n';
+  return pwalk_append(ip, line, p - line);
+}
+
+static int
+pwalk_table(pagetable_t pagetable, int level, struct inode *ip)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0)
+      continue;
+    if (pwalk_entry(ip, level, i, pte) < 0)
+      return -1;
+    if (level > 0 && (pte & (PTE_R | PTE_W | PTE_X)) == 0 &&
+        pwalk_table((pagetable_t)PTE2PA(pte), level - 1, ip) < 0)
+      return -1;
+  }
+  return 0;
+}
+
+struct kwalk_entry {
+  int level;
+  int index;
+  pte_t pte;
+};
+
+struct kwalk_chunk {
+  struct kwalk_chunk *next;
+  int count;
+  struct kwalk_entry entries[255];
+};
+
+static int
+kwalk_save_entry(struct kwalk_chunk **head, struct kwalk_chunk **tail,
+                 int level, int index, pte_t pte)
+{
+  struct kwalk_chunk *chunk = *tail;
+
+  if (chunk == 0 || chunk->count == NELEM(chunk->entries)) {
+    chunk = kalloc();
+    if (chunk == 0)
+      return -1;
+    chunk->next = 0;
+    chunk->count = 0;
+    if (*tail)
+      (*tail)->next = chunk;
+    else
+      *head = chunk;
+    *tail = chunk;
+  }
+
+  chunk->entries[chunk->count].level = level;
+  chunk->entries[chunk->count].index = index;
+  chunk->entries[chunk->count].pte = pte;
+  chunk->count++;
+  return 0;
+}
+
+static int
+kwalk_snapshot(pagetable_t pagetable, int level, struct kwalk_chunk **head,
+               struct kwalk_chunk **tail)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0)
+      continue;
+    if (kwalk_save_entry(head, tail, level, i, pte) < 0)
+      return -1;
+    if (level > 0 && (pte & (PTE_R | PTE_W | PTE_X)) == 0 &&
+        kwalk_snapshot((pagetable_t)PTE2PA(pte), level - 1, head, tail) < 0)
+      return -1;
+  }
+  return 0;
+}
+
+static void
+kwalk_free_snapshot(struct kwalk_chunk *chunk)
+{
+  while (chunk) {
+    struct kwalk_chunk *next = chunk->next;
+    kfree(chunk);
+    chunk = next;
+  }
+}
+
+static int
+kwalk_header(struct inode *ip, uint64 call, int pid)
+{
+  char line[64];
+  char digits[12];
+  char *p = line;
+  int n = 0;
+  static const char prefix[] = "=== kwalk call 0x";
+  static const char pid_prefix[] = " pid ";
+
+  for (int i = 0; i < sizeof(prefix) - 1; i++)
+    *p++ = prefix[i];
+  pwalk_hex(&p, call, 16);
+  for (int i = 0; i < sizeof(pid_prefix) - 1; i++)
+    *p++ = pid_prefix[i];
+  do {
+    digits[n++] = '0' + pid % 10;
+    pid /= 10;
+  } while (pid > 0);
+  while (n > 0)
+    *p++ = digits[--n];
+  *p++ = ' ';
+  *p++ = '=';
+  *p++ = '=';
+  *p++ = '=';
+  *p++ = '\n';
+  return pwalk_append(ip, line, p - line);
+}
+
+uint64
+sys_pwalk(void)
+{
+  struct inode *ip;
+  int result;
+
+  acquiresleep(&pwalk_lock);
+  begin_op();
+  if ((ip = create("/pwalk.txt", T_FILE, 0, 0)) == 0) {
+    end_op();
+    releasesleep(&pwalk_lock);
+    return -1;
+  }
+  if (ip->type != T_FILE) {
+    iunlockput(ip);
+    end_op();
+    releasesleep(&pwalk_lock);
+    return -1;
+  }
+  iunlock(ip);
+  end_op();
+
+  result = pwalk_header(ip, ++pwalk_calls);
+  if (result == 0)
+    result = pwalk_table(myproc()->pagetable, 2, ip);
+
+  begin_op();
+  iput(ip);
+  end_op();
+  releasesleep(&pwalk_lock);
+  return result;
+}
+
+uint64
+sys_kwalk(void)
+{
+  struct inode *ip;
+  int result = 0;
+  uint64 call;
+
+  acquiresleep(&pwalk_lock);
+  begin_op();
+  if ((ip = create("/kwalk.txt", T_FILE, 0, 0)) == 0) {
+    end_op();
+    releasesleep(&pwalk_lock);
+    return -1;
+  }
+  if (ip->type != T_FILE) {
+    iunlockput(ip);
+    end_op();
+    releasesleep(&pwalk_lock);
+    return -1;
+  }
+  iunlock(ip);
+  end_op();
+
+  call = ++kwalk_calls;
+  for (int i = 0; i < NPROC; i++) {
+    struct proc *p = &proc[i];
+    struct kwalk_chunk *head = 0;
+    struct kwalk_chunk *tail = 0;
+    int pid;
+
+    acquire(&p->lock);
+    if (p->pagetable == 0) {
+      release(&p->lock);
+      continue;
+    }
+    pid = p->pid;
+    result = kwalk_snapshot(p->pagetable, 2, &head, &tail);
+    release(&p->lock);
+
+    if (result == 0)
+      result = kwalk_header(ip, call, pid);
+    for (struct kwalk_chunk *chunk = head; result == 0 && chunk;
+         chunk = chunk->next) {
+      for (int j = 0; result == 0 && j < chunk->count; j++) {
+        struct kwalk_entry *entry = &chunk->entries[j];
+        result = pwalk_entry(ip, entry->level, entry->index, entry->pte);
+      }
+    }
+    kwalk_free_snapshot(head);
+    if (result < 0)
+      break;
+  }
+
+  begin_op();
+  iput(ip);
+  end_op();
+  releasesleep(&pwalk_lock);
+  return result;
 }
 
 uint64

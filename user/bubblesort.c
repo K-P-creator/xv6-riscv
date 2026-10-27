@@ -10,6 +10,7 @@ bubble_sort(int *numbers, int count)
   int i, j, temporary, swapped;
 
   for (i = 0; i < count - 1; i++) {
+    pwalk();
     count_g ++;
     swapped = 0;
     for (j = 0; j < count - i - 1; j++) {
@@ -45,6 +46,7 @@ parse_integer(char *text)
 int
 main(int argc, char *argv[])
 {
+  kwalk();
   int i;
   int *numbers;
 
@@ -71,6 +73,7 @@ main(int argc, char *argv[])
   }
   printf("\n");
 
+  kwalk();
   free(numbers);
   exit(0);
 }

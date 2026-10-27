@@ -23,6 +23,17 @@ main(void)
   dup(0); // stdout
   dup(0); // stderr
 
+  int pwalkfd = open("/pwalk.txt", O_CREATE | O_WRONLY | O_TRUNC);
+  if (pwalkfd < 0 || close(pwalkfd) < 0) {
+    printf("init: failed to reset /pwalk.txt\n");
+    exit(1);
+  }
+  int kwalkfd = open("/kwalk.txt", O_CREATE | O_WRONLY | O_TRUNC);
+  if (kwalkfd < 0 || close(kwalkfd) < 0) {
+    printf("init: failed to reset /kwalk.txt\n");
+    exit(1);
+  }
+
   for (;;) {
     printf("init: starting sh\n");
     pid = fork();
